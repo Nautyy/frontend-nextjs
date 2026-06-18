@@ -5,6 +5,7 @@ import type { ViewMode } from "@/types/claim";
  *
  * Member → outcome + plain English + what to do next
  * Ops    → outcome + full trace + policy/financial detail + audit history
+ * Test   → one-click assignment scenarios + full trace
  */
 export type ViewCapabilities = {
   showConfidence: boolean;
@@ -16,12 +17,14 @@ export type ViewCapabilities = {
   showWhatHappensNext: boolean;
   showSubmissionAudit: boolean;
   showHistorySidebar: boolean;
+  showDemoSidebar: boolean;
   showSubmitClaimButton: boolean;
+  showOpsApproval: boolean;
   useFriendlyLabels: boolean;
   traceCollapsedByDefault: boolean;
 };
 
-export const VIEW_CAPABILITIES: Record<ViewMode, ViewCapabilities> = {
+const VIEW_CAPABILITIES: Record<ViewMode, ViewCapabilities> = {
   member: {
     showConfidence: false,
     showFullTrace: false,
@@ -32,7 +35,9 @@ export const VIEW_CAPABILITIES: Record<ViewMode, ViewCapabilities> = {
     showWhatHappensNext: true,
     showSubmissionAudit: false,
     showHistorySidebar: false,
+    showDemoSidebar: false,
     showSubmitClaimButton: true,
+    showOpsApproval: false,
     useFriendlyLabels: true,
     traceCollapsedByDefault: true,
   },
@@ -46,7 +51,25 @@ export const VIEW_CAPABILITIES: Record<ViewMode, ViewCapabilities> = {
     showWhatHappensNext: false,
     showSubmissionAudit: true,
     showHistorySidebar: true,
+    showDemoSidebar: true,
     showSubmitClaimButton: false,
+    showOpsApproval: true,
+    useFriendlyLabels: false,
+    traceCollapsedByDefault: false,
+  },
+  test: {
+    showConfidence: true,
+    showFullTrace: true,
+    showTraceStepDetails: true,
+    showFinancialBreakdown: true,
+    showLineItems: true,
+    showMemberPayoutSummary: false,
+    showWhatHappensNext: false,
+    showSubmissionAudit: true,
+    showHistorySidebar: false,
+    showDemoSidebar: true,
+    showSubmitClaimButton: false,
+    showOpsApproval: false,
     useFriendlyLabels: false,
     traceCollapsedByDefault: false,
   },

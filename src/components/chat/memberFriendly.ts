@@ -3,6 +3,7 @@ import { filterTraceForView } from "@/types/claim";
 
 const STEP_LABELS: Record<string, string> = {
   gatekeeper_agent: "Documents verified",
+  submission_validator: "Details verified",
   policy_engine: "Policy check",
   decision_consolidator: "Final amount",
 };
@@ -55,6 +56,12 @@ const REJECTION_LABELS: Record<string, string> = {
   INVALID_TREATMENT_DATE:
     "The treatment date is missing or invalid. Please use a valid date (YYYY-MM-DD) and submit again.",
   INVALID_CLAIM_AMOUNT: "Please enter a claim amount greater than zero.",
+  TREATMENT_DATE_MISMATCH:
+    "The treatment date you entered doesn't match the date on your uploaded documents. Please correct the date or upload matching documents.",
+  DOCUMENT_DATE_INCONSISTENT:
+    "Your documents show different treatment dates. Please upload documents from the same visit.",
+  HOSPITAL_NAME_MISMATCH:
+    "The hospital name you entered doesn't match the hospital on your bill. Please correct it or upload the matching bill.",
   WAITING_PERIOD:
     "This treatment falls within a waiting period on your policy. You may be eligible after the waiting period ends.",
   PRE_AUTH_MISSING:
@@ -122,6 +129,11 @@ export function memberTraceMessage(step: string, message: string): string {
     return "We checked your claim against your health policy.";
   }
 
+  if (step === "submission_validator") {
+    if (/date|hospital|match|documents/i.test(message)) return message;
+    return "We verified your form details against your documents.";
+  }
+
   if (step === "decision_consolidator") {
     if (/co-pay|copay|₹|final/i.test(message)) return message;
     return "Your payout amount has been confirmed.";
@@ -173,6 +185,15 @@ export function memberNextSteps(result: ClaimResult): string | null {
       if (result.rejection_reasons?.includes("INVALID_CLAIM_AMOUNT")) {
         return "Enter a valid claim amount greater than zero and submit again.";
       }
+      if (
+        result.rejection_reasons?.includes("TREATMENT_DATE_MISMATCH") ||
+        result.rejection_reasons?.includes("DOCUMENT_DATE_INCONSISTENT")
+      ) {
+        return "Update the treatment date to match your documents, or upload documents for the date you entered, then submit again.";
+      }
+      if (result.rejection_reasons?.includes("HOSPITAL_NAME_MISMATCH")) {
+        return "Update the hospital name to match your bill, or upload the correct bill, then submit again.";
+      }
       return "Please fix the issue mentioned above and submit your claim again with the correct documents.";
     default:
       return null;
@@ -201,6 +222,16 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function resolveSubmittedAmount(
+  result: ClaimResult,
+  breakdown: Record<string, unknown>
+): number | null {
+  const fromBreakdown = asNumber(breakdown.submitted_claimed_amount);
+  if (fromBreakdown != null) return fromBreakdown;
+  const submission = result.submission as { claimed_amount?: number } | undefined;
+  return asNumber(submission?.claimed_amount);
+}
+
 function resolveStartingAmount(result: ClaimResult, breakdown: Record<string, unknown>): number | null {
   const fromDocuments = asNumber(breakdown.document_total_amount);
   if (fromDocuments != null) return fromDocuments;
@@ -211,8 +242,7 @@ function resolveStartingAmount(result: ClaimResult, breakdown: Record<string, un
   }
   const fromBreakdown = asNumber(breakdown.claimed_amount);
   if (fromBreakdown != null) return fromBreakdown;
-  const submission = result.submission as { claimed_amount?: number } | undefined;
-  return asNumber(submission?.claimed_amount);
+  return resolveSubmittedAmount(result, breakdown);
 }
 
 function hintForBreakdownKey(key: string): string | undefined {
@@ -256,7 +286,7 @@ export function buildMemberAmountDetail(result: ClaimResult): MemberAmountDetail
   const lineItems = buildMemberLineItems(result);
   const narrative: string[] = [];
 
-  const submittedAmount = asNumber(breakdown.submitted_claimed_amount);
+  const submittedAmount = resolveSubmittedAmount(result, breakdown);
   const documentTotal = asNumber(breakdown.document_total_amount);
   if (submittedAmount != null) {
     narrative.push(`Amount you entered on the form: ${formatInr(submittedAmount)}.`);
@@ -265,13 +295,26 @@ export function buildMemberAmountDetail(result: ClaimResult): MemberAmountDetail
     narrative.push(
       `Total read from your documents: ${formatInr(documentTotal)}. We used the document amounts for this decision.`
     );
+  } else if (documentTotal != null && submittedAmount == null) {
+    narrative.push(`Total read from your documents: ${formatInr(documentTotal)}.`);
   }
 
   const startingAmount = resolveStartingAmount(result, breakdown);
   if (lineItems.length > 0) {
     narrative.push(`Your bill has ${lineItems.length} line item(s).`);
-  } else if (startingAmount != null && submittedAmount == null && documentTotal == null) {
+  } else if (
+    startingAmount != null &&
+    submittedAmount == null &&
+    documentTotal == null
+  ) {
     narrative.push(`Starting amount: ${formatInr(startingAmount)}.`);
+  } else if (
+    startingAmount != null &&
+    documentTotal != null &&
+    submittedAmount != null &&
+    documentTotal !== submittedAmount
+  ) {
+    narrative.push(`Bill total used for review: ${formatInr(startingAmount)}.`);
   }
 
   const eligibleAmount = asNumber(breakdown.claimed_amount);

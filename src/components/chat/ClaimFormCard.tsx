@@ -1,7 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ClaimSubmissionPayload } from "@/types/claim";
+import {
+  type ClaimFor,
+  claimForOptionsForEmployee,
+  familyForEmployee,
+  lookupEmployee,
+  resolvePolicyMember,
+} from "@/data/policyMembers";
 
 type DocumentEntry = {
   file_id: string;
@@ -11,6 +18,7 @@ type DocumentEntry = {
   file_content_base64: string;
   content_summary: string;
   content_source?: string;
+  patient_name_on_doc?: string;
 };
 
 type Props = {
@@ -36,25 +44,48 @@ const DOC_TYPES = [
   "DIAGNOSTIC_REPORT",
 ];
 
-function guessDocType(fileName: string): string {
-  const name = fileName.toLowerCase();
-  if (name.includes("prescription") || name.includes("rx")) return "PRESCRIPTION";
-  if (name.includes("pharmacy")) return "PHARMACY_BILL";
-  if (name.includes("hospital") || name.includes("clinic") || name.includes("bill"))
-    return "HOSPITAL_BILL";
-  if (name.includes("lab") || name.includes("report")) return "LAB_REPORT";
+function guessDocType(mimeType: string): string {
+  if (mimeType.startsWith("text/")) {
+    return "PRESCRIPTION";
+  }
   return "";
 }
 
 export default function ClaimFormCard({ loading, variant = "member", onSubmit }: Props) {
-  const [memberId, setMemberId] = useState("EMP001");
+  const [memberId, setMemberId] = useState("");
+  const [claimFor, setClaimFor] = useState<ClaimFor>("SELF");
+  const [patientName, setPatientName] = useState("");
   const [category, setCategory] = useState("CONSULTATION");
-  const [treatmentDate, setTreatmentDate] = useState("2024-11-01");
-  const [claimedAmount, setClaimedAmount] = useState(1500);
+  const [treatmentDate, setTreatmentDate] = useState("");
+  const [claimedAmount, setClaimedAmount] = useState("");
   const [hospitalName, setHospitalName] = useState("");
   const [documents, setDocuments] = useState<DocumentEntry[]>([]);
   const [textDoc, setTextDoc] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+
+  const policyMember = useMemo(() => resolvePolicyMember(memberId), [memberId]);
+  const employee = useMemo(() => lookupEmployee(memberId), [memberId]);
+  const claimForOptions = useMemo(
+    () => claimForOptionsForEmployee(memberId),
+    [memberId]
+  );
+  const beneficiary = useMemo(
+    () => familyForEmployee(memberId, claimFor),
+    [memberId, claimFor]
+  );
+
+  useEffect(() => {
+    if (claimForOptions.length === 0) {
+      setPatientName("");
+      return;
+    }
+    if (!claimForOptions.some((o) => o.value === claimFor)) {
+      setClaimFor(claimForOptions[0].value);
+      return;
+    }
+    const selected = claimForOptions.find((o) => o.value === claimFor);
+    if (selected) setPatientName(selected.memberName);
+  }, [claimFor, claimForOptions]);
 
   const addFile = async (file: File) => {
     const buffer = await file.arrayBuffer();
@@ -64,7 +95,7 @@ export default function ClaimFormCard({ loading, variant = "member", onSubmit }:
       {
         file_id: `F${prev.length + 1}`,
         file_name: file.name,
-        actual_type: guessDocType(file.name),
+        actual_type: guessDocType(file.type || ""),
         mime_type: file.type || "application/octet-stream",
         file_content_base64: base64,
         content_summary: "",
@@ -110,18 +141,45 @@ export default function ClaimFormCard({ loading, variant = "member", onSubmit }:
       }
     }
 
+    const parsedAmount = Number(claimedAmount.replace(/,/g, ""));
+    if (!claimedAmount.trim() || !Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setFormError("Enter a valid claimed amount greater than zero.");
+      return;
+    }
+
+    const employeeId = memberId.trim().toUpperCase();
+    if (!resolvePolicyMember(employeeId)) {
+      setFormError("Employee ID not found on policy. Use your Plum employee ID (e.g. EMP001).");
+      return;
+    }
+
+    if (!claimForOptions.some((o) => o.value === claimFor)) {
+      setFormError("Select who this claim is for.");
+      return;
+    }
+
+    const patientHint = patientName.trim() || beneficiary?.name || "";
+    const docsWithPatient = docs.map((doc) =>
+      patientHint && !doc.content_summary
+        ? { ...doc, patient_name_on_doc: patientHint }
+        : doc
+    );
+
     onSubmit({
-      member_id: memberId,
+      member_id: employeeId,
       policy_id: "PLUM_GHI_2024",
       claim_category: category,
       treatment_date: treatmentDate,
-      claimed_amount: claimedAmount,
+      claimed_amount: parsedAmount,
+      claim_for: claimFor,
+      patient_name: patientHint || undefined,
       hospital_name: hospitalName || undefined,
-      documents: docs.map(({ file_content_base64, content_summary, actual_type, ...rest }) => ({
+      documents: docsWithPatient.map(({ file_content_base64, content_summary, actual_type, patient_name_on_doc, ...rest }) => ({
         ...rest,
         actual_type,
         file_content_base64: file_content_base64 || undefined,
         content_summary: content_summary || undefined,
+        patient_name_on_doc: patient_name_on_doc || undefined,
       })),
     });
   };
@@ -139,9 +197,78 @@ export default function ClaimFormCard({ loading, variant = "member", onSubmit }:
       </p>
 
       <div className="grid gap-4 sm:grid-cols-2">
+        <label className="block">
+          <span className="text-xs font-medium text-text-muted">Employee ID</span>
+          <input
+            className={inputClass}
+            value={memberId}
+            onChange={(e) => setMemberId(e.target.value.toUpperCase())}
+            placeholder="EMP001"
+            required
+          />
+          {policyMember && (
+            <p className="mt-1 text-xs text-text-muted">
+              {policyMember.primary_member_id ? (
+                <>
+                  Enrolled member:{" "}
+                  <span className="font-medium text-text">{policyMember.name}</span>
+                  {employee && (
+                    <>
+                      {" "}
+                      · Policy holder:{" "}
+                      <span className="font-medium text-text">{employee.name}</span>
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  Policy holder:{" "}
+                  <span className="font-medium text-text">{policyMember.name}</span>
+                </>
+              )}
+            </p>
+          )}
+        </label>
+
+        <label className="block">
+          <span className="text-xs font-medium text-text-muted">Who is this claim for?</span>
+          <select
+            className={inputClass}
+            value={claimFor}
+            onChange={(e) => setClaimFor(e.target.value as ClaimFor)}
+            disabled={claimForOptions.length === 0}
+          >
+            {claimForOptions.length === 0 ? (
+              <option value="">Enter a valid employee ID first</option>
+            ) : (
+              claimForOptions.map((opt) => (
+                <option key={`${opt.value}-${opt.memberName}`} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))
+            )}
+          </select>
+          {beneficiary && (
+            <p className="mt-1 text-xs text-text-muted">
+              Documents should show:{" "}
+              <span className="font-medium text-text">{beneficiary.name}</span>
+            </p>
+          )}
+        </label>
+
         <label className="block sm:col-span-2">
-          <span className="text-xs font-medium text-text-muted">Member ID</span>
-          <input className={inputClass} value={memberId} onChange={(e) => setMemberId(e.target.value)} required />
+          <span className="text-xs font-medium text-text-muted">
+            Patient name on documents (optional)
+          </span>
+          <input
+            className={inputClass}
+            value={patientName}
+            onChange={(e) => setPatientName(e.target.value)}
+            placeholder={beneficiary?.name ?? "As printed on bill or prescription"}
+          />
+          <p className="mt-1 text-xs text-text-muted">
+            Must match the name on uploaded bills. We auto-fill from your selection when possible.
+          </p>
         </label>
 
         <label className="block">
@@ -167,10 +294,12 @@ export default function ClaimFormCard({ loading, variant = "member", onSubmit }:
         <label className="block">
           <span className="text-xs font-medium text-text-muted">Claimed amount (₹)</span>
           <input
-            type="number"
+            type="text"
+            inputMode="numeric"
             className={inputClass}
             value={claimedAmount}
-            onChange={(e) => setClaimedAmount(Number(e.target.value))}
+            onChange={(e) => setClaimedAmount(e.target.value.replace(/[^\d]/g, ""))}
+            placeholder="1500"
             required
           />
         </label>

@@ -8,6 +8,9 @@ type Props = {
   placeholder?: string;
   suggestions?: string[];
   onSuggestion?: (text: string) => void;
+  footerNote?: string;
+  onNewChat?: () => void;
+  newChatLabel?: string;
 };
 
 export default function ChatInput({
@@ -18,6 +21,9 @@ export default function ChatInput({
   placeholder = "Ask about your claim…",
   suggestions = [],
   onSuggestion,
+  footerNote,
+  onNewChat,
+  newChatLabel = "New chat",
 }: Props) {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -29,6 +35,19 @@ export default function ChatInput({
   return (
     <div className="w-full border-t border-black/5 bg-white">
       <div className="mx-auto w-full max-w-3xl px-4 py-4 sm:px-6">
+        {onNewChat && (
+          <div className="mb-3 flex justify-center">
+            <button
+              type="button"
+              onClick={onNewChat}
+              disabled={disabled}
+              className="rounded-full border border-border bg-white px-4 py-1.5 text-xs font-semibold text-text transition hover:border-plum-brand/30 hover:bg-plum-brand/5 disabled:opacity-50"
+            >
+              {newChatLabel}
+            </button>
+          </div>
+        )}
+
         {suggestions.length > 0 && (
           <div className="mb-3 flex flex-wrap justify-center gap-2">
             {suggestions.map((s) => (
@@ -75,7 +94,8 @@ export default function ChatInput({
         </div>
 
         <p className="mt-2.5 text-center text-[11px] text-text-muted">
-          Plum Claims Assistant explains your decision. For account issues, contact Plum support.
+          {footerNote ??
+            "Plum Claims Assistant explains your decision. For account issues, contact Plum support."}
         </p>
       </div>
     </div>

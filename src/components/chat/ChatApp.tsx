@@ -1,29 +1,47 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import type { Audience } from "./chatConfig";
 import { AUDIENCE_CONFIG, getInitialMessages } from "./chatConfig";
 import ClaimHistorySidebar from "./ClaimHistorySidebar";
+import type { DemoTestCase } from "@/types/claim";
 import type { ChatMessage, ClaimHistorySummary, ClaimResult } from "@/types/claim";
 import ChatHeader from "./ChatHeader";
 import ChatInput from "./ChatInput";
 import ChatMessageView from "./ChatMessage";
 import { getViewCapabilities } from "./viewCapabilities";
 import { buildChatClaimContext, parseChatError } from "./chatContext";
+import { fetchTestCasePayload } from "@/data/demoTestCases";
+
+const DemoSidebar = dynamic(() => import("./DemoSidebar"), { ssr: false });
+const OpsSidebar = dynamic(() => import("./OpsSidebar"), { ssr: false });
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+
+function deploymentConfigError(): string | null {
+  if (typeof window === "undefined") return null;
+  const onLocalhost =
+    window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  const apiIsLocal = API_URL.includes("localhost") || API_URL.includes("127.0.0.1");
+  if (!onLocalhost && apiIsLocal) {
+    return `This app is deployed at ${window.location.origin} but NEXT_PUBLIC_API_URL is still "${API_URL}". Set it to your deployed backend URL (e.g. https://your-bff.onrender.com/api/v1) in Vercel/Render env vars and redeploy.`;
+  }
+  return null;
+}
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function buildHistoryViewMessages(claim: ClaimResult, intro: string): ChatMessage[] {
+  const scenario = claim.case_id ? ` (${claim.case_id})` : "";
   return [
     {
       id: uid(),
       role: "assistant",
       kind: "text",
-      content: `Loaded claim #${claim.claim_id} from history. Full trace and decision are below — ask me anything about this adjudication.`,
+      content: `Loaded claim #${claim.claim_id}${scenario} from saved runs. Full trace and decision are below — ask me anything about this adjudication.`,
     },
     {
       id: uid(),
@@ -37,9 +55,10 @@ function buildHistoryViewMessages(claim: ClaimResult, intro: string): ChatMessag
 
 type Props = {
   audience: Audience;
+  demoCases?: DemoTestCase[];
 };
 
-export default function ChatApp({ audience }: Props) {
+export default function ChatApp({ audience, demoCases }: Props) {
   const config = AUDIENCE_CONFIG[audience];
   const caps = getViewCapabilities(config.viewMode);
 
@@ -57,6 +76,9 @@ export default function ChatApp({ audience }: Props) {
   const [pendingSubmission, setPendingSubmission] = useState<Record<string, unknown> | null>(null);
   const [recordLoading, setRecordLoading] = useState(false);
   const [recordError, setRecordError] = useState<string | null>(null);
+  const [opsApproveLoading, setOpsApproveLoading] = useState(false);
+  const [opsApproveError, setOpsApproveError] = useState<string | null>(null);
+  const [runningCaseId, setRunningCaseId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback(() => {
@@ -84,6 +106,11 @@ export default function ChatApp({ audience }: Props) {
   }, [loadHistory]);
 
   useEffect(() => {
+    const configError = deploymentConfigError();
+    if (configError) setError(configError);
+  }, []);
+
+  useEffect(() => {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
@@ -103,28 +130,46 @@ export default function ChatApp({ audience }: Props) {
     setClaimResult(null);
     setPendingSubmission(null);
     setRecordError(null);
+    setOpsApproveError(null);
     setActiveClaimId(null);
     setInput("");
     setError(null);
   };
 
-  const openHistoricalClaim = async (claimId: string) => {
+  const openHistoricalClaim = async (item: ClaimHistorySummary) => {
     if (loadingClaimId) return;
 
-    setLoadingClaimId(claimId);
+    const rowId = item.id || `${item.claim_id}-${item.submitted_at}`;
+    setLoadingClaimId(rowId);
     setError(null);
-    setActiveClaimId(claimId);
+    setActiveClaimId(rowId);
+
+    const fetchIds = [...new Set([item.id, item.claim_id].filter(Boolean))] as string[];
+    let lastError = "Could not load claim";
 
     try {
-      const res = await fetch(`${API_URL}/claims/${encodeURIComponent(claimId)}`);
-      if (!res.ok) {
+      let data: ClaimResult | null = null;
+      for (const id of fetchIds) {
+        const res = await fetch(`${API_URL}/claims/${encodeURIComponent(id)}`);
+        if (res.ok) {
+          data = (await res.json()) as ClaimResult;
+          break;
+        }
         const text = await res.text();
-        throw new Error(text || `Failed to load claim (${res.status})`);
+        lastError = text || `Failed to load claim (${res.status})`;
+        if (res.status !== 404) {
+          throw new Error(lastError);
+        }
       }
 
-      const data = (await res.json()) as ClaimResult;
-      setClaimResult({ ...data, recorded: true });
-      setMessages(buildHistoryViewMessages({ ...data, recorded: true }, config.decisionIntro(data.decision)));
+      if (!data) {
+        throw new Error(lastError);
+      }
+
+      const loaded: ClaimResult = { ...data, recorded: true };
+      setClaimResult(loaded);
+      setActiveClaimId(loaded.id ?? rowId);
+      setMessages(buildHistoryViewMessages(loaded, config.decisionIntro(data.decision)));
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not load claim";
       setError(msg);
@@ -134,17 +179,22 @@ export default function ChatApp({ audience }: Props) {
     }
   };
 
-  const handleClaimSubmit = async (payload: Record<string, unknown>) => {
+  const handleClaimSubmit = async (
+    payload: Record<string, unknown>,
+    userLabel?: string
+  ) => {
     setClaimLoading(true);
     setError(null);
     setRecordError(null);
+    setOpsApproveError(null);
     setActiveClaimId(null);
     setPendingSubmission(payload);
 
     const submitLabel =
-      audience === "ops"
+      userLabel ??
+      (audience === "ops"
         ? `Run adjudication for ${payload.member_id} — ₹${Number(payload.claimed_amount).toLocaleString("en-IN")} (${payload.claim_category})`
-        : `Check claim for ${payload.member_id} — ₹${Number(payload.claimed_amount).toLocaleString("en-IN")} (${payload.claim_category})`;
+        : `Check claim for ${payload.member_id} — ₹${Number(payload.claimed_amount).toLocaleString("en-IN")} (${payload.claim_category})`);
 
     addMessage({ id: uid(), role: "user", kind: "text", content: submitLabel });
     addMessage({ id: uid(), role: "assistant", kind: "typing", content: "" });
@@ -164,9 +214,23 @@ export default function ChatApp({ audience }: Props) {
       }
 
       const data = (await res.json()) as ClaimResult;
+      const testCaseId = payload.case_id ? String(payload.case_id) : undefined;
+      const savedAsScenario = Boolean(testCaseId);
       const result: ClaimResult = caps.showSubmissionAudit
-        ? { ...data, submission: payload, submitted_at: new Date().toISOString(), recorded: true }
-        : { ...data, submission: payload, recorded: false };
+        ? {
+            ...data,
+            submission: payload,
+            submitted_at: new Date().toISOString(),
+            recorded: savedAsScenario,
+            ops_approved: false,
+            case_id: testCaseId,
+          }
+        : {
+            ...data,
+            submission: payload,
+            recorded: savedAsScenario,
+            case_id: testCaseId,
+          };
 
       setClaimResult(result);
       setActiveClaimId(result.claim_id);
@@ -184,13 +248,16 @@ export default function ChatApp({ audience }: Props) {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Submission failed";
-      setError(msg);
+      const configError = deploymentConfigError();
+      setError(configError ?? msg);
       setPendingSubmission(null);
       replaceTyping({
         id: uid(),
         role: "assistant",
         kind: "text",
-        content: `Could not process claim: ${msg}. Check that LangGraph is running on port 2024.`,
+        content: configError
+          ? configError
+          : `Could not process claim: ${msg}. Backend URL: ${API_URL}. If deployed, set NEXT_PUBLIC_API_URL (frontend) and LANGGRAPH_BASE_URL (backend) in your host env vars.`,
       });
     } finally {
       setClaimLoading(false);
@@ -207,7 +274,7 @@ export default function ChatApp({ audience }: Props) {
     );
   };
 
-  const handleRecordClaim = async () => {
+  const handleRecordClaim = async (memberNote?: string) => {
     if (!claimResult || !pendingSubmission || recordLoading || claimResult.recorded) return;
 
     setRecordLoading(true);
@@ -228,6 +295,7 @@ export default function ChatApp({ audience }: Props) {
           rejection_reasons: claimResult.rejection_reasons,
           line_item_decisions: claimResult.line_item_decisions,
           financial_breakdown: claimResult.financial_breakdown,
+          ...(memberNote ? { member_note: memberNote } : {}),
         }),
       });
 
@@ -242,6 +310,7 @@ export default function ChatApp({ audience }: Props) {
         ...data,
         submission: pendingSubmission,
         recorded: true,
+        member_note: data.member_note ?? memberNote,
         submitted_at: data.submitted_at ?? new Date().toISOString(),
       };
 
@@ -304,24 +373,91 @@ export default function ChatApp({ audience }: Props) {
     }
   };
 
+  const handleOpsApprove = async (opsNote?: string) => {
+    if (!claimResult || opsApproveLoading || claimResult.ops_approved) return;
+
+    setOpsApproveLoading(true);
+    setOpsApproveError(null);
+
+    try {
+      const res = await fetch(`${API_URL}/claims/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          claim_id: claimResult.claim_id,
+          ...(opsNote ? { ops_note: opsNote } : {}),
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Request failed (${res.status})`);
+      }
+
+      const data = (await res.json()) as ClaimResult;
+      const updated: ClaimResult = { ...claimResult, ...data, ops_approved: true };
+      setClaimResult(updated);
+      updateDecisionInMessages(updated);
+      loadHistory();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not approve claim";
+      setOpsApproveError(msg);
+    } finally {
+      setOpsApproveLoading(false);
+    }
+  };
+
+  const handleRunDemoCase = async (testCase: DemoTestCase) => {
+    setRunningCaseId(testCase.case_id);
+    setSidebarOpen(false);
+    try {
+      const payload = await fetchTestCasePayload(testCase.case_id);
+      await handleClaimSubmit(payload, `${testCase.case_id}: ${testCase.case_name}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not run scenario";
+      setError(msg);
+    } finally {
+      setRunningCaseId(null);
+    }
+  };
+
   const handleSuggestion = (text: string) => {
     handleAsk(text);
   };
 
   const suggestions = config.followUpSuggestions;
   const inputDisabled = claimLoading || chatLoading || Boolean(loadingClaimId);
+  const showOpsSidebar = caps.showDemoSidebar && caps.showHistorySidebar && demoCases;
+  const showSidebar = showOpsSidebar || caps.showHistorySidebar || (caps.showDemoSidebar && demoCases);
 
   return (
     <div className="flex h-dvh flex-col bg-[#f7f7f8]">
       <ChatHeader
+        audience={audience}
         config={config}
         onNewChat={handleNewChat}
-        showSidebarToggle={caps.showHistorySidebar}
+        showSidebarToggle={showSidebar}
         onToggleSidebar={() => setSidebarOpen(true)}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {caps.showHistorySidebar && (
+        {showOpsSidebar && demoCases && (
+          <OpsSidebar
+            demoCases={demoCases}
+            runningCaseId={runningCaseId}
+            claimLoading={claimLoading}
+            claims={historyClaims}
+            activeId={activeClaimId}
+            historyLoading={historyLoading}
+            open={sidebarOpen}
+            onClose={() => setSidebarOpen(false)}
+            onNewReview={handleNewChat}
+            onRunCase={handleRunDemoCase}
+            onSelectClaim={openHistoricalClaim}
+          />
+        )}
+
+        {!showOpsSidebar && caps.showHistorySidebar && (
           <ClaimHistorySidebar
             claims={historyClaims}
             activeId={activeClaimId}
@@ -330,6 +466,18 @@ export default function ChatApp({ audience }: Props) {
             onClose={() => setSidebarOpen(false)}
             onNewReview={handleNewChat}
             onSelect={openHistoricalClaim}
+          />
+        )}
+
+        {!showOpsSidebar && caps.showDemoSidebar && demoCases && (
+          <DemoSidebar
+            demoCases={demoCases}
+            runningCaseId={runningCaseId}
+            claimLoading={claimLoading}
+            open={sidebarOpen}
+            onClose={() => setSidebarOpen(false)}
+            onNewReview={handleNewChat}
+            onRunCase={handleRunDemoCase}
           />
         )}
 
@@ -350,6 +498,10 @@ export default function ChatApp({ audience }: Props) {
                   recordLoading={recordLoading}
                   recordError={recordError}
                   viewMode={config.viewMode}
+                  claimResult={claimResult}
+                  opsApproveLoading={opsApproveLoading}
+                  opsApproveError={opsApproveError}
+                  onOpsApprove={caps.showOpsApproval ? handleOpsApprove : undefined}
                   onClaimSubmit={handleClaimSubmit}
                   onRecordClaim={caps.showSubmitClaimButton ? handleRecordClaim : undefined}
                 />
@@ -374,6 +526,8 @@ export default function ChatApp({ audience }: Props) {
               placeholder={config.placeholderAfter}
               suggestions={suggestions}
               onSuggestion={handleSuggestion}
+              onNewChat={handleNewChat}
+              newChatLabel={config.newClaimLabel}
             />
           )}
         </div>

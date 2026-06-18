@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import ChatApp from "@/components/chat/ChatApp";
+import OpsPageClient from "./OpsPageClient";
 
 export const metadata: Metadata = {
   title: "Plum Claims Review Console",
@@ -7,5 +7,5 @@ export const metadata: Metadata = {
 };
 
 export default function OpsPage() {
-  return <ChatApp audience="ops" />;
+  return <OpsPageClient />;
 }

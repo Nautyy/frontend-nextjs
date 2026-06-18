@@ -16,6 +16,9 @@ export function buildChatClaimContext(result: ClaimResult): Record<string, unkno
     financial_breakdown: result.financial_breakdown,
     recorded: result.recorded,
     submitted_at: result.submitted_at,
+    ops_approved: result.ops_approved,
+    ops_approved_at: result.ops_approved_at,
+    member_note: result.member_note,
     submission: submission
       ? {
           member_id: submission.member_id,

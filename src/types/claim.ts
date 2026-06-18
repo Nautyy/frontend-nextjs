@@ -14,6 +14,8 @@ export type LineItemDecision = {
 };
 
 export type ClaimResult = {
+  /** Present when loaded from saved runs */
+  id?: string;
   claim_id: string;
   decision: string;
   approved_amount: number;
@@ -28,9 +30,17 @@ export type ClaimResult = {
   submitted_at?: string;
   /** Member has sent this claim to Plum / ops queue */
   recorded?: boolean;
+  /** Ops reviewer has signed off for settlement (HITL) */
+  ops_approved?: boolean;
+  ops_approved_at?: string;
+  ops_approval_note?: string;
+  /** Assignment / OCR scenario id (e.g. TC001, OCR-003) */
+  case_id?: string;
+  /** Optional message from member when submitting to ops */
+  member_note?: string;
 };
 
-export type ViewMode = "member" | "ops";
+export type ViewMode = "member" | "ops" | "test";
 
 export type ClaimSubmissionPayload = Record<string, unknown>;
 
@@ -48,6 +58,8 @@ export type ChatMessage =
   | { id: string; role: "assistant"; kind: "typing"; content: string };
 
 export type ClaimHistorySummary = {
+  /** MongoDB record id — unique per saved run */
+  id?: string;
   claim_id: string;
   member_id: string;
   policy_id: string;
@@ -58,13 +70,27 @@ export type ClaimHistorySummary = {
   reason: string;
   confidence_score: number;
   submitted_at: string;
+  ops_approved?: boolean;
+  case_id?: string;
   documents: Array<{ file_name?: string; actual_type?: string; has_content?: boolean }>;
+};
+
+export type DemoTestCase = {
+  case_id: string;
+  case_name: string;
+  description: string;
+  source?: "assignment" | "ocr";
+  expectedDecision?: string | null;
+  expectedAmount?: number;
 };
 
 export function isActionRequired(result: ClaimResult): boolean {
   if (result.decision === "PENDING") return true;
-  const gatekeeper = result.execution_trace.find((e) => e.step === "gatekeeper_agent");
-  return gatekeeper?.status === "FAILED";
+  const failedStep = result.execution_trace.find(
+    (e) =>
+      (e.step === "gatekeeper_agent" || e.step === "submission_validator") && e.status === "FAILED"
+  );
+  return Boolean(failedStep);
 }
 
 export function formatBreakdownKey(key: string): string {
@@ -91,7 +117,7 @@ export const CARD_LEVEL_DETAIL_KEYS = new Set([
 ]);
 
 export function filterTraceForView(trace: TraceEntry[], viewMode: ViewMode): TraceEntry[] {
-  if (viewMode === "ops") return trace;
+  if (viewMode !== "member") return trace;
   return trace.filter((entry) => !OPS_ONLY_TRACE_STEPS.has(entry.step));
 }
 

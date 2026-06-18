@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { ClaimResult, ViewMode } from "@/types/claim";
 import { formatBreakdownKey, isActionRequired } from "@/types/claim";
 import { formatScalar } from "./formatTraceDetails";
@@ -25,7 +26,7 @@ const DECISION_STYLES: Record<string, { badge: string; accent: string }> = {
 type Props = {
   result: ClaimResult;
   viewMode: ViewMode;
-  onRecordClaim?: () => void | Promise<void>;
+  onRecordClaim?: (memberNote?: string) => void | Promise<void>;
   recordLoading?: boolean;
   recordError?: string | null;
 };
@@ -225,14 +226,52 @@ function SubmissionAudit({ result }: { result: ClaimResult }) {
       <dl className="mt-3 space-y-2 text-sm">
         {submittedAt && (
           <div className="flex justify-between gap-4">
-            <dt className="text-text-muted">Submitted</dt>
+            <dt className="text-text-muted">Adjudicated</dt>
             <dd className="font-medium text-text">{submittedAt}</dd>
+          </div>
+        )}
+        {result.ops_approved_at && (
+          <div className="flex justify-between gap-4">
+            <dt className="text-text-muted">Ops approved</dt>
+            <dd className="font-medium text-emerald-700">
+              {new Date(result.ops_approved_at).toLocaleString("en-IN", {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </dd>
+          </div>
+        )}
+        {result.ops_approval_note && (
+          <div>
+            <dt className="text-text-muted">Ops approval note</dt>
+            <dd className="mt-1 whitespace-pre-wrap font-medium text-text">{result.ops_approval_note}</dd>
+          </div>
+        )}
+        {result.member_note && (
+          <div>
+            <dt className="text-text-muted">Member note</dt>
+            <dd className="mt-1 whitespace-pre-wrap font-medium text-text">{result.member_note}</dd>
           </div>
         )}
         {submission?.member_id != null && (
           <div className="flex justify-between gap-4">
-            <dt className="text-text-muted">Member</dt>
+            <dt className="text-text-muted">Employee ID</dt>
             <dd className="font-medium text-text">{String(submission.member_id)}</dd>
+          </div>
+        )}
+        {submission?.claim_for != null && (
+          <div className="flex justify-between gap-4">
+            <dt className="text-text-muted">Claim for</dt>
+            <dd className="font-medium text-text">{String(submission.claim_for)}</dd>
+          </div>
+        )}
+        {(submission?.patient_name as string | undefined) && (
+          <div className="flex justify-between gap-4">
+            <dt className="text-text-muted">Patient</dt>
+            <dd className="font-medium text-text">{String(submission.patient_name)}</dd>
           </div>
         )}
         {submission?.policy_id != null && (
@@ -299,8 +338,10 @@ function SubmitClaimBanner({
   recorded: boolean;
   loading?: boolean;
   error?: string | null;
-  onSubmit?: () => void | Promise<void>;
+  onSubmit?: (memberNote?: string) => void | Promise<void>;
 }) {
+  const [memberNote, setMemberNote] = useState("");
+
   if (recorded) {
     return (
       <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
@@ -319,9 +360,25 @@ function SubmitClaimBanner({
         The decision above is a preview. When you submit, we send it to Plum for processing and
         your claims team can review it.
       </p>
+      <details className="mt-3 group">
+        <summary className="cursor-pointer text-sm font-medium text-plum-800 marker:content-none [&::-webkit-details-marker]:hidden">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="text-plum-brand transition group-open:rotate-90">›</span>
+            Add a note for the ops team (optional)
+          </span>
+        </summary>
+        <textarea
+          className="mt-2 w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text outline-none transition focus:border-plum-brand/50 focus:ring-2 focus:ring-plum-brand/10"
+          rows={3}
+          value={memberNote}
+          onChange={(e) => setMemberNote(e.target.value)}
+          placeholder="Anything you'd like the claims team to know…"
+          maxLength={1000}
+        />
+      </details>
       <button
         type="button"
-        onClick={() => onSubmit?.()}
+        onClick={() => onSubmit?.(memberNote.trim() || undefined)}
         disabled={loading || !onSubmit}
         className="mt-3 w-full rounded-xl bg-plum-brand px-4 py-3 text-sm font-semibold text-white transition hover:bg-plum-brand-dark disabled:opacity-50"
       >
@@ -350,6 +407,8 @@ export default function DecisionCard({
     ? memberDecisionLabel(result.decision)
     : result.decision.replace("_", " ");
   const isRecorded = Boolean(result.recorded || result.submitted_at);
+  const isOpsView = viewMode === "ops";
+  const awaitingOpsApproval = isOpsView && !result.ops_approved && result.decision !== "PENDING";
 
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-white shadow-sm ring-1 ring-black/3">
@@ -357,16 +416,33 @@ export default function DecisionCard({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
-              {caps.useFriendlyLabels ? "Your claim result" : "Ops decision review"}
+              {caps.useFriendlyLabels
+                ? "Your claim result"
+                : result.ops_approved
+                  ? "Final ops decision"
+                  : "AI recommendation"}
             </p>
             <p className="text-lg font-semibold text-text">#{result.claim_id}</p>
+            {isOpsView && !result.ops_approved && (
+              <p className="mt-0.5 text-xs text-amber-700">Pending human approval for settlement</p>
+            )}
+            {isOpsView && result.ops_approved && (
+              <p className="mt-0.5 text-xs text-emerald-700">Signed off for settlement</p>
+            )}
             {caps.useFriendlyLabels && (
               <p className="mt-0.5 text-xs text-text-muted">Your claim reference number</p>
             )}
           </div>
+          <div className="flex flex-col items-end gap-1">
           <span className={`rounded-full px-3 py-1 text-sm font-semibold ${style.badge}`}>
             {decisionLabel}
           </span>
+          {awaitingOpsApproval && (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+              Awaiting HITL
+            </span>
+          )}
+          </div>
         </div>
       </div>
 
@@ -378,7 +454,11 @@ export default function DecisionCard({
         {result.approved_amount > 0 && (
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
-              {caps.useFriendlyLabels ? "You'll receive" : "Approved amount"}
+              {caps.useFriendlyLabels
+                ? "You'll receive"
+                : result.ops_approved
+                  ? "Approved amount"
+                  : "AI recommended payout"}
             </p>
             <p className={`text-3xl font-bold ${style.accent}`}>
               ₹{result.approved_amount.toLocaleString("en-IN")}
